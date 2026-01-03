@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Mac
+.DS_Store
+
+# Data
+# Ignore the database so your personal financial info isn't public!
+data/investments.db
