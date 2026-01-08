@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import auth
 from utils import init_db, add_transaction, get_transactions, get_portfolio_stats, update_transaction, delete_transaction, get_managed_assets, add_managed_asset, delete_managed_asset
 
 # Page Config
@@ -9,10 +10,22 @@ st.set_page_config(page_title="Investment Tracker", page_icon="📈", layout="wi
 # Initialize DB
 init_db()
 
+# Authentication
+auth.login()
+user_email = auth.get_user_email()
+
+if not user_email:
+    st.stop()
+
 # Title
 st.title("📈 My Investment Tracker")
 
 # Sidebar for Navigation
+with st.sidebar:
+    st.write(f"👤 **{user_email}**")
+    auth.logout()
+    st.divider()
+
 page = st.sidebar.radio("Navigate", ["Dashboard", "Add Transaction", "History", "Administration"])
 
 if page == "Add Transaction":
