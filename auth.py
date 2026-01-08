@@ -11,14 +11,32 @@ REDIRECT_URI = 'http://localhost:8501'
 
 def get_flow():
     """Creates the OAuth flow object."""
-    if not os.path.exists(CLIENT_SECRET_FILE):
+    # Determine the redirect URI
+    # On Streamlit Cloud, it shouldn't be localhost
+    # Ideally, configure this via secret, or auto-detect is tricky.
+    # We will use a secret if available, otherwise default to localhost or hardcoded
+    redirect_uri = st.secrets.get("redirect_url", REDIRECT_URI)
+
+    if os.path.exists(CLIENT_SECRET_FILE):
+        flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
+            CLIENT_SECRET_FILE,
+            scopes=SCOPES
+        )
+    elif "google_oauth" in st.secrets:
+        # Load from secrets
+        config = st.secrets["google_oauth"]
+        # Ensure it's a dict
+        if hasattr(config, "to_dict"):
+            config = config.to_dict()
+            
+        flow = google_auth_oauthlib.flow.Flow.from_client_config(
+            config,
+            scopes=SCOPES
+        )
+    else:
         return None
         
-    flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
-        CLIENT_SECRET_FILE,
-        scopes=SCOPES
-    )
-    flow.redirect_uri = REDIRECT_URI
+    flow.redirect_uri = redirect_uri
     return flow
 
 def login():

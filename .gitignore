@@ -8,6 +8,8 @@ env/
 # Mac
 .DS_Store
 
+client_secret.json
+
 # Data
 # Ignore the database so your personal financial info isn't public!
 data/investments.db
