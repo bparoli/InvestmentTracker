@@ -1,8 +1,9 @@
 streamlit
 yfinance
 pandas
-matplotlib
-google-auth
-google-auth-oauthlib
-google-api-python-client
+watchdog
+openpyxl
 st-gsheets-connection
+# Supabase / PostgreSQL dependencies
+psycopg2-binary
+sqlalchemy

@@ -1,87 +1,70 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+from sqlalchemy import text
 import pandas as pd
 import yfinance as yf
 import datetime
-import uuid
 
-# Constants
-SHEET_INVESTMENTS = "investments"
-SHEET_MANAGED = "managed_assets"
-
-# Cache TTL: Time to live for cache. Set low for interactive editing.
+# Cache TTL
 TTL = 0 
 
 def get_connection():
-    """Returns the GSheets connection object."""
-    return st.connection("gsheets", type=GSheetsConnection)
+    """Returns the SQL connection object for Supabase."""
+    return st.connection("supabase", type="sql")
 
 def init_db():
-    """
-    Checks if sheets exist/have headers. 
-    If empty, initializes them.
-    """
+    """Initializes the database tables if they don't exist."""
     conn = get_connection()
-    
-    # 1. Investments Sheet
-    try:
-        df_inv = conn.read(worksheet=SHEET_INVESTMENTS, ttl=TTL)
-        if df_inv.empty or "id" not in df_inv.columns:
-             # Initialize with headers
-             initial_data = pd.DataFrame(columns=["id", "date", "asset_type", "ticker", "amount", "quantity"])
-             conn.update(worksheet=SHEET_INVESTMENTS, data=initial_data)
-    except Exception:
-        # Likely sheet doesn't exist or is completely empty
-        initial_data = pd.DataFrame(columns=["id", "date", "asset_type", "ticker", "amount", "quantity"])
-        conn.update(worksheet=SHEET_INVESTMENTS, data=initial_data)
-
-    # 2. Managed Assets Sheet
-    try:
-        df_mgd = conn.read(worksheet=SHEET_MANAGED, ttl=TTL)
-        if df_mgd.empty or "id" not in df_mgd.columns:
-            initial_managed = pd.DataFrame([
-                {"id": str(uuid.uuid4()), "ticker": "BTC", "asset_type": "Crypto"},
-                {"id": str(uuid.uuid4()), "ticker": "ETH", "asset_type": "Crypto"},
-                {"id": str(uuid.uuid4()), "ticker": "BNB", "asset_type": "Crypto"}
-            ])
-            conn.update(worksheet=SHEET_MANAGED, data=initial_managed)
-    except Exception:
-        initial_managed = pd.DataFrame([
-                {"id": str(uuid.uuid4()), "ticker": "BTC", "asset_type": "Crypto"},
-                {"id": str(uuid.uuid4()), "ticker": "ETH", "asset_type": "Crypto"},
-                {"id": str(uuid.uuid4()), "ticker": "BNB", "asset_type": "Crypto"}
-            ])
-        conn.update(worksheet=SHEET_MANAGED, data=initial_managed)
+    with conn.session as s:
+        # Investments Table
+        s.execute(text('''
+            CREATE TABLE IF NOT EXISTS investments (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                asset_type TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                amount DECIMAL NOT NULL,
+                quantity DECIMAL NOT NULL
+            );
+        '''))
+        
+        # Managed Assets Table
+        s.execute(text('''
+            CREATE TABLE IF NOT EXISTS managed_assets (
+                id SERIAL PRIMARY KEY,
+                ticker TEXT NOT NULL UNIQUE,
+                asset_type TEXT NOT NULL
+            );
+        '''))
+        
+        # Check for default managed assets
+        result = s.execute(text("SELECT count(*) FROM managed_assets")).fetchone()[0]
+        if result == 0:
+            s.execute(text("INSERT INTO managed_assets (ticker, asset_type) VALUES (:t, :a)"), [{"t": "BTC", "a": "Crypto"}, {"t": "ETH", "a": "Crypto"}, {"t": "BNB", "a": "Crypto"}])
+            
+        s.commit()
 
 def add_transaction(date, asset_type, ticker, amount, quantity):
-    """Adds a new investment transaction to the Sheet."""
+    """Adds a new investment transaction."""
     conn = get_connection()
-    df = conn.read(worksheet=SHEET_INVESTMENTS, ttl=TTL)
-    
-    new_entry = pd.DataFrame([{
-        "id": str(uuid.uuid4()),
-        "date": date.strftime("%Y-%m-%d"),
-        "asset_type": asset_type,
-        "ticker": ticker.upper(),
-        "amount": float(amount),
-        "quantity": float(quantity)
-    }])
-    
-    updated_df = pd.concat([df, new_entry], ignore_index=True)
-    conn.update(worksheet=SHEET_INVESTMENTS, data=updated_df)
+    with conn.session as s:
+        s.execute(
+            text("INSERT INTO investments (date, asset_type, ticker, amount, quantity) VALUES (:d, :a, :t, :am, :q)"),
+            {"d": date, "a": asset_type, "t": ticker.upper(), "am": amount, "q": quantity}
+        )
+        s.commit()
 
 def get_transactions():
-    """Retrieves all transactions from the Sheet."""
+    """Retrieves all transactions."""
     conn = get_connection()
     try:
-        df = conn.read(worksheet=SHEET_INVESTMENTS, ttl=TTL)
+        # caching logic handled by st.connection if needed, but for now we read fresh
+        df = conn.query("SELECT * FROM investments ORDER BY date DESC", ttl=TTL)
         if df.empty:
-            return pd.DataFrame(columns=["id", "date", "asset_type", "ticker", "amount", "quantity"])
-        # Ensure correct types
-        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
-        df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
-        # Sort desc by date
-        df = df.sort_values(by="date", ascending=False)
+             return pd.DataFrame(columns=["id", "date", "asset_type", "ticker", "amount", "quantity"])
+        
+        # Ensure numeric types for downstream math
+        df['amount'] = pd.to_numeric(df['amount'])
+        df['quantity'] = pd.to_numeric(df['quantity'])
         return df
     except Exception:
         return pd.DataFrame()
@@ -89,76 +72,52 @@ def get_transactions():
 def update_transaction(id, date, asset_type, ticker, amount, quantity):
     """Updates an existing transaction."""
     conn = get_connection()
-    df = conn.read(worksheet=SHEET_INVESTMENTS, ttl=TTL)
-    
-    # Needs to be string for comparison if UUIDs are used
-    df['id'] = df['id'].astype(str)
-    id = str(id)
-    
-    if id in df['id'].values:
-        df.loc[df['id'] == id, 'date'] = date.strftime("%Y-%m-%d")
-        df.loc[df['id'] == id, 'asset_type'] = asset_type
-        df.loc[df['id'] == id, 'ticker'] = ticker.upper()
-        df.loc[df['id'] == id, 'amount'] = float(amount)
-        df.loc[df['id'] == id, 'quantity'] = float(quantity)
-        
-        conn.update(worksheet=SHEET_INVESTMENTS, data=df)
+    with conn.session as s:
+        s.execute(
+            text("UPDATE investments SET date = :d, asset_type = :a, ticker = :t, amount = :am, quantity = :q WHERE id = :id"),
+            {"d": date, "a": asset_type, "t": ticker.upper(), "am": amount, "q": quantity, "id": id}
+        )
+        s.commit()
 
 def delete_transaction(id):
     """Deletes a transaction."""
     conn = get_connection()
-    df = conn.read(worksheet=SHEET_INVESTMENTS, ttl=TTL)
-    
-    df['id'] = df['id'].astype(str)
-    id = str(id)
-    
-    updated_df = df[df['id'] != id]
-    conn.update(worksheet=SHEET_INVESTMENTS, data=updated_df)
+    with conn.session as s:
+        s.execute(text("DELETE FROM investments WHERE id = :id"), {"id": id})
+        s.commit()
 
 def get_managed_assets(asset_type=None):
     """Retrieves managed assets."""
     conn = get_connection()
     try:
-        df = conn.read(worksheet=SHEET_MANAGED, ttl=TTL)
-        if df.empty:
-            return pd.DataFrame(columns=["id", "ticker", "asset_type"])
-            
         if asset_type:
-            df = df[df['asset_type'] == asset_type]
-            
-        return df.sort_values(by="ticker")
+            df = conn.query("SELECT * FROM managed_assets WHERE asset_type = :a ORDER BY ticker", params={"a": asset_type}, ttl=TTL)
+        else:
+            df = conn.query("SELECT * FROM managed_assets ORDER BY asset_type, ticker", ttl=TTL)
+        return df
     except Exception:
         return pd.DataFrame()
 
 def add_managed_asset(ticker, asset_type):
     """Adds a new managed asset."""
     conn = get_connection()
-    df = conn.read(worksheet=SHEET_MANAGED, ttl=TTL)
-    
-    # Check duplicate
-    if ticker.upper() in df['ticker'].str.upper().values:
+    try:
+        with conn.session as s:
+             s.execute(
+                text("INSERT INTO managed_assets (ticker, asset_type) VALUES (:t, :a)"),
+                {"t": ticker.upper(), "a": asset_type}
+             )
+             s.commit()
+        return True
+    except Exception:
         return False
-        
-    new_entry = pd.DataFrame([{
-        "id": str(uuid.uuid4()),
-        "ticker": ticker.upper(),
-        "asset_type": asset_type
-    }])
-    
-    updated_df = pd.concat([df, new_entry], ignore_index=True)
-    conn.update(worksheet=SHEET_MANAGED, data=updated_df)
-    return True
 
 def delete_managed_asset(id):
     """Deletes a managed asset."""
     conn = get_connection()
-    df = conn.read(worksheet=SHEET_MANAGED, ttl=TTL)
-    
-    df['id'] = df['id'].astype(str)
-    id = str(id)
-    
-    updated_df = df[df['id'] != id]
-    conn.update(worksheet=SHEET_MANAGED, data=updated_df)
+    with conn.session as s:
+        s.execute(text("DELETE FROM managed_assets WHERE id = :id"), {"id": id})
+        s.commit()
 
 
 # --- Pricing and Stats (Unchanged Logic, just helper) ---
